@@ -1,0 +1,9 @@
+__pycache__/
+*.pt
+experiments/
+data/processed/
+*.onnx
+*.json
+.env
+.venv
+test_results/
