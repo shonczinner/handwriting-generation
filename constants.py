@@ -1,5 +1,9 @@
+RAW_PATH = "data/raw/"
 PROCESSED_PATH = "data/processed/"
 SAVE_PATH = 'experiments/'
 SUMMARY_PATH = 'summary/'
 TEST_RESULTS_PATH = 'test_results/'
-TOKENIZER_PATH = 'data/processed/tokenizer.json'
+RAW_STROKES_PATH = 'data/raw/strokes_data.csv'
+PROCESSED_STROKES_PATH = 'data/processed/strokes_data.csv'
+PROCESSED_STROKES_STATS_PATH = 'data/processed/strokes_stats.csv'
+RAW_ASCII_PATH = 'data/raw/ascii_data.csv'

@@ -10,7 +10,10 @@ def plot_strokes(df,ascii=None, save_path = None):
     n_rows = math.ceil(n_lines / n_cols)
 
     fig, axes = plt.subplots(n_rows, n_cols,constrained_layout=True)
-    axes = axes.flatten()  # Flatten in case of multi-row layout
+    if n_lines == 1:
+        axes = [axes]
+    else:
+        axes = axes.flatten()
 
     for i, l_g in enumerate(line_groups):
         ax = axes[i]

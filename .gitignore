@@ -2,8 +2,10 @@ __pycache__/
 *.pt
 experiments/
 data/processed/
+data/raw/
 *.onnx
 *.json
 .env
 .venv
 test_results/
+TODO.txt

@@ -40,16 +40,16 @@ def generate_data():
 
 
 if __name__=="__main__":
-    from constants import PROCESSED_PATH
+    from constants import RAW_PATH, RAW_STROKES_PATH, RAW_ASCII_PATH
 
     stroke_df, ascii_df = generate_data()
 
-    os.makedirs(PROCESSED_PATH,exist_ok=True)
+    os.makedirs(RAW_PATH,exist_ok=True)
 
-    strokes_save_path = os.path.join(PROCESSED_PATH,"strokes_data.csv")
-    stroke_df.to_csv(strokes_save_path)
+    strokes_save_path = RAW_STROKES_PATH
+    stroke_df.to_csv(strokes_save_path,index=False)
 
-    ascii_save_path = os.path.join(PROCESSED_PATH,"ascii_data.csv")
-    ascii_df.to_csv(ascii_save_path)
+    ascii_save_path = RAW_ASCII_PATH
+    ascii_df.to_csv(ascii_save_path,index=False)
 
 
