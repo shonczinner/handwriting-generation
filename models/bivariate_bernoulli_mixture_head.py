@@ -35,24 +35,36 @@ class BivariateBernoulliMixtureHead(nn.Module):
 
         return means, stdevs, log_weights, correlations, last_logit
     
-    def loss(self, x, y):
-        # x: [B, T, H]
-        # y: [B, T, 3]
-        means, stdevs, log_weights, correlations, last_logit = self.forward(x)        
+    def loss(self, x, y, lengths):
+        # x: [B, T, H]   (RNN output)
+        # y: [B, T, 3]   (Target)
+        
+        means, stdevs, log_weights, correlations, last_logit = self.forward(x)  # [B, T, C, 2], [B, T, C], etc.
 
-        z0 = (y[...,:2].unsqueeze(-2)-means)/stdevs # [B, T, n_components, 2]
-        Z = z0[...,0].pow(2)+z0[...,1].pow(2)-2*correlations*z0[...,0]*z0[...,1]
+        # Compute Gaussian log-likelihood
+        z0 = (y[..., :2].unsqueeze(-2) - means) / stdevs  # [B, T, C, 2]
+        Z = z0[..., 0]**2 + z0[..., 1]**2 - 2 * correlations * z0[..., 0] * z0[..., 1]
 
         log_2pi = torch.log(torch.tensor(2 * torch.pi, device=stdevs.device, dtype=stdevs.dtype))
-        log_probs = -0.5 * Z / (1 - correlations.pow(2)) \
-            - log_2pi \
-            - torch.log(stdevs[..., 0]) \
-            - torch.log(stdevs[..., 1]) \
-            - 0.5 * torch.log(1 - correlations.pow(2))
-        
-        gaussian_loss = -torch.logsumexp(log_weights+log_probs,dim=-1)
-        bernoulli_loss = F.binary_cross_entropy_with_logits(last_logit,y[...,2])
-        return (gaussian_loss+bernoulli_loss).mean()
+        log_probs = -0.5 * Z / (1 - correlations**2) \
+                    - log_2pi \
+                    - torch.log(stdevs[..., 0]) \
+                    - torch.log(stdevs[..., 1]) \
+                    - 0.5 * torch.log(1 - correlations**2)
+
+        gaussian_loss = -torch.logsumexp(log_weights + log_probs, dim=-1)  # [B, T]
+        bernoulli_loss = F.binary_cross_entropy_with_logits(last_logit, y[..., 2], reduction='none')  # [B, T]
+
+        total_loss = gaussian_loss + bernoulli_loss  # [B, T]
+
+        # Mask padding
+        max_len = y.size(1)
+        mask = torch.arange(max_len, device=lengths.device)[None, :] < lengths[:, None]  # [B, T]
+        masked_loss = total_loss * mask  # [B, T]
+
+        mean_loss = masked_loss.sum() / mask.sum()  # scalar
+        return mean_loss
+
 
     @torch.no_grad() 
     def sample(self, x):
@@ -87,66 +99,7 @@ class BivariateBernoulliMixtureHead(nn.Module):
 
     @torch.no_grad()
     def plot_heatmap(self, y, x, save_path=None):
-        # y: [1, T, 3]
-        # x: [1, T, H]
-        B, T, H = x.shape
-        assert B == 1, "plot_heatmap expects a single batch (B=1)"
-
-        # Forward pass
-        means, stdevs, log_weights, correlations, last_logit = self.forward(x)
-        weights = torch.exp(log_weights)[0]             # [T, n]
-        means = means[0]                                # [T, n, 2]
-        stdevs = stdevs[0]                              # [T, n, 2]
-        correlations = correlations[0]                  # [T, n]
-        last_prob = torch.sigmoid(last_logit[0])        # [T]
-
-        # Compute absolute positions and predicted means
-        actual_pos = torch.cumsum(y[0, :, :2], dim=0)   # [T, 2]
-        predicted_pos = actual_pos.unsqueeze(1) + means # [T, n, 2]
-
-        covs = self._build_covariance_matrix(stdevs, correlations)  # [T, n, 2, 2]
-
-        device = predicted_pos.device
-
-        headmap_2d = None
-
-        # Plotting setup
-        fig, axs = plt.subplots(3, 1, figsize=(12, 10),
-                                gridspec_kw={'height_ratios': [5, 1, 1]})
-
-        # Heatmap + Trajectory
-        im0 = axs[0].imshow(heatmap_2d, extent=(x_grid[0].item(), x_grid[-1].item(),
-                                                y_grid[0].item(), y_grid[-1].item()),
-                            origin='lower', cmap='hot', alpha=0.7)
-        fig.colorbar(im0, ax=axs[0], orientation='vertical', label='Density')
-
-        axs[0].scatter(actual_pos[:, 0].cpu().numpy(),
-                    actual_pos[:, 1].cpu().numpy(),
-                    color='cyan', label='Actual Trajectory', s=2)
-        axs[0].set_title("Predicted Heatmap + Actual Trajectory")
-        axs[0].set_ylabel("Y")
-        axs[0].axis('equal')
-        axs[0].legend()
-
-        # Mixture Weights
-        im1 = axs[1].imshow(weights.T.cpu().numpy(), aspect='auto', cmap='viridis',
-                            extent=[0, T, 0, weights.shape[1]])
-        axs[1].set_title("Mixture Weights")
-        axs[1].set_ylabel("Component")
-        fig.colorbar(im1, ax=axs[1], orientation='vertical', label='Weight')
-
-        # Bernoulli Probabilities
-        im2 = axs[2].imshow(last_prob.unsqueeze(0).cpu().numpy(), aspect='auto', cmap='coolwarm',
-                            extent=[0, T, 0, 1])
-        axs[2].set_title("Bernoulli Probability")
-        axs[2].set_yticks([])
-        axs[2].set_xlabel("Timestep")
-        fig.colorbar(im2, ax=axs[2], orientation='vertical', label='Probability')
-
-        plt.tight_layout()
-        if save_path is not None:
-            plt.savefig(save_path)
-        plt.show()
+        pass
 
 
     @staticmethod
@@ -174,10 +127,6 @@ class BivariateBernoulliMixtureHead(nn.Module):
         return cov
 
 
-
-
-    
-        
 if __name__ == "__main__":
     from pathlib import Path
     from constants import TEST_RESULTS_PATH 
@@ -188,8 +137,14 @@ if __name__ == "__main__":
 
     # Create random input and target tensors
     x = torch.randn(B, T, H)
-    # y: 2D target values + Bernoulli (0 or 1)
     y = torch.cat([torch.randn(B, T, 2), torch.randint(0, 2, (B, T, 1)).float()], dim=-1)
+
+    # Create random sequence lengths (simulate padding scenario)
+    lengths = torch.randint(low=5, high=T + 1, size=(B,))  # lengths ∈ [5, 10]
+
+    # Zero out padding positions in y to simulate realistic padded input
+    for i in range(B):
+        y[i, lengths[i]:] = 0.0  # pad with zeros (dummy values)
 
     # Initialize model
     model = BivariateBernoulliMixtureHead(input_dim=H, n_components=n_components)
@@ -203,19 +158,11 @@ if __name__ == "__main__":
     print("Last logit shape:", last_logit.shape)
 
     # Compute loss
-    loss = model.loss(x, y)
-    print("Loss shape:", loss.shape)  # Should be a scalar
+    loss = model.loss(x, y, lengths)
+    print("Loss shape:", loss.shape)  # Should be scalar
     print("Loss sample:", loss.item())
 
-    # Sample from the model
-    sample = model.sample(x[:,-1:,:])
-    print("Sample shape:", sample.shape)  # Should be [B, 1, 3]
+    # Sample from the model using last timestep of first batch
+    sample = model.sample(x[0:1, -1:, :])
+    print("Sample shape:", sample.shape)  # Should be [1, 1, 3]
     print("Sample example:", sample[0, 0])
-
-    from utils.parse_strokes import parse_strokes
-    code = 'a01-000u'
-    df = parse_strokes(code)
-    y = torch.tensor(df.loc[df['line']==0][['delta_x','delta_y','lift_point']].to_numpy()).unsqueeze(0)
-    model.plot_heatmap(y,torch.randn(1, y.size(1), H),save_path=Path(TEST_RESULTS_PATH)/"heatmap.png")
-
-        

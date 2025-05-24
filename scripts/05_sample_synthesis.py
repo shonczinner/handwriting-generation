@@ -2,7 +2,7 @@ import torch
 import pandas as pd
 
 @torch.no_grad()
-def sample(model, device, max_length=1000):
+def sample(model, ascii, device, max_length=1000):
     model.eval()
 
     start = torch.zeros((1, 1, 3), dtype=torch.float32).to(device)  # B, T, F
@@ -10,7 +10,7 @@ def sample(model, device, max_length=1000):
     generated = start
     hidden = None
     for _ in range(max_length):
-        sample, hidden = model.sample(generated[:, -1:], hidden)
+        sample, hidden = model.sample(generated[:, -1:],ascii, hidden)
         generated = torch.cat((generated, sample), dim=1)
 
     return generated
@@ -34,25 +34,30 @@ def tensor_to_df(output, denormalize_stats=None):
 if __name__ == "__main__":
     import os
     from pathlib import Path
-    from models.prediction_model import PredictionModel
+    from models.synthesis_model import SynthesisModel
     from utils.config import Config
     from constants import SAVE_PATH, PROCESSED_STROKES_STATS_PATH
     from utils.display_strokes import plot_strokes
+    from utils.tokenizer import CharTokenizer
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # Load config and model
-    model_folder = os.path.join(SAVE_PATH, "prediction")
+    model_folder = os.path.join(SAVE_PATH, "synthesis")
     config = Config.load(model_folder)
-    model = PredictionModel(config)
+    model = SynthesisModel(config)
     model_path = os.path.join(model_folder, "model.pth")
     model.load_state_dict(torch.load(model_path, map_location=device))
     print("Model loaded from:", model_path)
 
     model = model.to(device)
 
+    tokenizer = CharTokenizer.load(os.path.join(SAVE_PATH,"tokenizer.json"))
+
     # Generate sample
-    output = sample(model, device, max_length=500)
+    text = "hello world"
+    ascii = torch.tensor(tokenizer.encode(text), dtype=torch.long).to(device).unsqueeze(0)
+    output = sample(model, ascii, device, max_length=500)
 
     # Plot strokes with denormalized values
     plot_strokes(tensor_to_df(output, denormalize_stats=PROCESSED_STROKES_STATS_PATH),save_path=os.path.join(model_folder,"sample.png"))

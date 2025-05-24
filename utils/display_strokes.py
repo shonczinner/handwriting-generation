@@ -2,14 +2,15 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import math
 
-def plot_strokes(df,ascii=None, save_path = None):
+def plot_strokes(df, ascii=None, save_path=None):
     line_groups = [l_g.reset_index(drop=True) for _, l_g in df.groupby("line")]
     n_lines = len(line_groups)
 
     n_cols = 1
     n_rows = math.ceil(n_lines / n_cols)
 
-    fig, axes = plt.subplots(n_rows, n_cols,constrained_layout=True)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4 * n_cols, 4 * n_rows), constrained_layout=True)
+    
     if n_lines == 1:
         axes = [axes]
     else:
@@ -18,14 +19,15 @@ def plot_strokes(df,ascii=None, save_path = None):
     for i, l_g in enumerate(line_groups):
         ax = axes[i]
         if ascii is not None:
-            ax.set_title(ascii['text'].iloc[i])
+            ax.set_title(ascii['text'].iloc[i], fontsize=12)
+
         l_g['x'] = l_g['delta_x'].cumsum()
         l_g['y'] = -l_g['delta_y'].cumsum()
         l_g['stroke'] = [0] + l_g['lift_point'].cumsum().to_list()[:-1]
 
         stroke_groups = [s_g.reset_index(drop=True) for _, s_g in l_g.groupby("stroke")]
         for s_g in stroke_groups:
-            ax.plot(s_g['x'], s_g['y'], color="black")
+            ax.plot(s_g['x'], s_g['y'], color="black", antialiased=True, linewidth=0.5)
 
         ax.set_aspect('equal')
         padding = 10
@@ -36,10 +38,8 @@ def plot_strokes(df,ascii=None, save_path = None):
     for j in range(i + 1, len(axes)):
         axes[j].axis("off")
 
-    plt.tight_layout()
-
     if save_path is not None:
-        plt.savefig(save_path)
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
 
     plt.show()
 

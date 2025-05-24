@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from models.bivariate_bernoulli_mixture_head import BivariateBernoulliMixtureHead
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
 
 class PredictionModel(nn.Module):
     def __init__(self, config):
@@ -16,11 +17,11 @@ class PredictionModel(nn.Module):
         means, stdevs, log_weights, correlations, last_logit = self.binomialbernoullimixturehead(out) # 
         return means, stdevs, log_weights, correlations, last_logit, hidden # ..., [num_layers, batch, hidden_size]
     
-    def loss(self,x,y,hidden=None):
+    def loss(self,x,y,lengths,hidden=None):
         # x: [batch, seq_len, input_dim]
         # h: None or [num_layers, batch, hidden_size]
         out, hidden = self.rnn(x, hidden) # [batch, seq_len, hidden],[num_layers, batch, hidden_size]
-        loss = self.binomialbernoullimixturehead.loss(out,y) # 
+        loss = self.binomialbernoullimixturehead.loss(out,y,lengths) # 
         return loss, hidden # ..., [num_layers, batch, hidden_size]
     
     @torch.no_grad()
@@ -45,6 +46,7 @@ class PredictionModel(nn.Module):
 
 if __name__ == "__main__":
     from types import SimpleNamespace
+
     # Dummy config for testing
     config = SimpleNamespace(
         input_dim=10,
@@ -61,8 +63,18 @@ if __name__ == "__main__":
     seq_len = 20
     x = torch.randn(batch_size, seq_len, config.input_dim)
 
-    # Dummy target assuming output is 3-dimensional: (x, y, bernoulli_mask)
-    y = torch.randint(0, 2, (batch_size, seq_len, 3)).float()
+    # Simulate sequence lengths (e.g., as if sequences were padded)
+    lengths = torch.randint(low=5, high=seq_len + 1, size=(batch_size,))
+
+    # Dummy target: 2D points + bernoulli indicator
+    y = torch.cat([
+        torch.randn(batch_size, seq_len, 2),
+        torch.randint(0, 2, (batch_size, seq_len, 1)).float()
+    ], dim=-1)
+
+    # Zero out padded targets (optional but good for testing)
+    for i in range(batch_size):
+        y[i, lengths[i]:] = 0.0
 
     # --- Forward pass ---
     means, stdevs, log_weights, correlations, last_logit, hidden = model(x)
@@ -74,13 +86,13 @@ if __name__ == "__main__":
     print("Last Logit shape:", last_logit.shape)
 
     # --- Loss computation ---
-    loss, hidden = model.loss(x, y)
+    loss, hidden = model.loss(x, y, lengths)
     print("\nLoss computation:")
     print("Loss:", loss.item())
 
     # --- Sampling ---
-    sample, hidden = model.sample(x)
+    sample_input = x[0:1, -1:, :]  # last timestep of first sample
+    sample, _ = model.sample(sample_input)
     print("\nSampling:")
     print("Sample shape:", sample.shape)
-
-
+    print("Sample:", sample)
