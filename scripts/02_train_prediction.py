@@ -16,59 +16,53 @@ class PredictionTrainer:
 
         self.train_loader, self.val_loader, self.test_loader = get_prediction_loaders(
             data,
-            config.batch_size,
-            config.train_pct,
-            config.val_pct
+            batch_size = config.batch_size,
+            train_pct=config.train_pct,
+            val_pct=config.val_pct
         )
 
-        self.save_path =  os.path.join(SAVE_PATH, "prediction")
+        self.save_path = os.path.join(SAVE_PATH, "prediction")
         os.makedirs(self.save_path, exist_ok=True)
         self.model_path = os.path.join(self.save_path, "model.pth")
 
         self.model = PredictionModel(config).to(device)
         self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.learning_rate)
-        self.loss_fn = torch.nn.GaussianNLLLoss()
 
         self.train_losses, self.val_losses = [], []
         self.load_model()
 
-
     def load_model(self):
         if os.path.exists(self.model_path):
-            self.model.load_state_dict(torch.load(self.model_path, weights_only=True))
+            self.model.load_state_dict(torch.load(self.model_path))
             self.model = self.model.to(self.device)
             
-            metrics = pd.read_csv(os.path.join(self.save_path, "metrics.csv"),header=0)
-            self.train_losses = metrics["train_losses"].tolist()
-            self.val_losses = metrics["val_losses"].tolist()
-
-            print("Model loaded from",self.model_path)
+            metrics_path = os.path.join(self.save_path, "metrics.csv")
+            if os.path.exists(metrics_path):
+                metrics = pd.read_csv(metrics_path)
+                self.train_losses = metrics["train_losses"].tolist()
+                self.val_losses = metrics["val_losses"].tolist()
+                print("Model loaded from", self.model_path)
 
     def save_model(self):
         torch.save(self.model.state_dict(), self.model_path)
         metrics = pd.DataFrame({
             "train_losses": self.train_losses,
             "val_losses": self.val_losses,
-            })
+        })
         metrics.to_csv(os.path.join(self.save_path, "metrics.csv"), index=False)
-
         self.config.save(self.save_path)
-
-        print("Model saved at",self.model_path)
+        print("Model saved at", self.model_path)
 
     def run_epoch(self, loader, train):
         self.model.train() if train else self.model.eval()
         total_loss = 0
 
         with torch.set_grad_enabled(train):
-            for x, y, lengths in loader:
-                x, y, lengths = x.to(self.device), y.to(self.device), lengths.to(self.device)
-
+            for x, y,lengths in loader:
                 if train:
                     self.optimizer.zero_grad()
 
-                # Assume model.loss accepts (x, y, lengths)
-                loss, _ = self.model.loss(x, y, lengths)
+                loss, _ = self.model.loss(x, y,lengths=lengths)
 
                 if train:
                     loss.backward()
@@ -81,8 +75,9 @@ class PredictionTrainer:
 
     def train(self):
         for epoch in range(self.config.epochs):
-            train_loss = self.run_epoch(self.train_loader,True)
-            val_loss = self.run_epoch(self.val_loader,False)
+            train_loss = self.run_epoch(self.train_loader, True)
+            val_loss = self.run_epoch(self.val_loader, False)
+
             print(f"Epoch {epoch+1} | Train Loss: {train_loss:.4f}")
             print(f" Val Loss: {val_loss:.4f}")
             self.train_losses.append(train_loss)
@@ -90,11 +85,11 @@ class PredictionTrainer:
 
         self.save_model()
         plot_metrics(None, self.train_losses, self.val_losses, self.save_path, "Loss")
-     
 
     def evaluate(self):
-        test_loss = self.run_epoch(self.test_loader,False)
+        test_loss = self.run_epoch(self.test_loader, False)
         print(f"Test Loss: {test_loss:.4f}")
+
 
 if __name__ == "__main__":
     from constants import PROCESSED_STROKES_PATH

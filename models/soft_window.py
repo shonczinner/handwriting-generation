@@ -1,49 +1,79 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+
+import torch
+import torch.nn as nn
+
+import torch
+import torch.nn as nn
+
 
 class SoftWindow(nn.Module):
     def __init__(self, input_dim, n_components):
         super().__init__()
         self.n_components = n_components
-        self.output_dim = 3 * n_components
-        self.net = nn.Linear(input_dim, self.output_dim)
+        self.linear = nn.Linear(input_dim, 3 * n_components)
 
-    def forward(self, x, c, kappa=None):
-        # x: [B, T, H]
-        # c: [B, U, embedding_dim]
-        # kappa: [B, n_components]
+    def forward(self, x, c, kappa=None, ascii_lengths=None):
+        """
+        Args:
+            x: [B, 1, H] - input at current time step
+            c: [B, U, V] - character sequence (context)
+            kappa: [B, n_components] - previous attention centers (optional)
+            ascii_lengths: [B] - actual lengths of character sequences (optional)
+        Returns:
+            w: [B, 1, V] - weighted sum of context (window)
+            new_kappa: [B, n_components] - updated attention centers
+        """
 
-        B, T, _ = x.shape
-        Bc, U, embedding_dim = c.shape
-        assert B == Bc, "Batch size mismatch between x and c"
+        B, T, H = x.shape
+        assert T == 1, "SoftWindow only supports a single time step (T=1)"
+        Bc, U, V = c.shape
+        assert B == Bc, "Batch size mismatch between input x and context c"
 
+        # Initialize kappa if not provided
         if kappa is None:
             kappa = torch.zeros(B, self.n_components, device=x.device, dtype=x.dtype)
 
-        out = self.net(x)  # [B, T, 3 * n_components]
-        alpha_hat, beta_hat, kappa_hat = torch.chunk(out, 3, dim=2)  # Each: [B, T, n_components]
+        # Compute attention parameters: alpha, beta, kappa
+        linear_out = self.linear(x).squeeze(1)  # [B, 3 * n_components]
+        alpha_hat, beta_hat, kappa_hat = linear_out.chunk(3, dim=-1)  # Each: [B, n_components]
 
-        alpha = torch.exp(alpha_hat).unsqueeze(2)  # [B, T, 1, n_components]
-        beta = torch.exp(beta_hat).unsqueeze(2)    # [B, T, 1, n_components]
+        alpha = torch.exp(alpha_hat)             # [B, n_components]
+        beta = torch.exp(beta_hat)               # [B, n_components]
+        new_kappa = kappa + torch.exp(kappa_hat-3.9) # [B, n_components] #-3.9 makes window steps start smaller
 
-        kappa = kappa.unsqueeze(1) + torch.cumsum(torch.exp(kappa_hat), dim=1)
-        kappa_expanded = kappa.unsqueeze(2)  # [B, T, 1, n_components]
+        # Prepare character positions u: [1, U, 1]
+        u = torch.arange(U, device=x.device, dtype=x.dtype).view(1, U, 1)
 
-        u = torch.arange(U, device=x.device, dtype=x.dtype).view(1, 1, U, 1)  # [1, 1, U, 1]
+        # Broadcast parameters to shape [B, U, n_components]
+        kappa_exp = new_kappa.unsqueeze(1)  # [B, 1, n_components]
+        beta_exp = beta.unsqueeze(1)        # [B, 1, n_components]
+        alpha_exp = alpha.unsqueeze(1)      # [B, 1, n_components]
 
-        phi = alpha * torch.exp(-beta * ((kappa_expanded - u) ** 2))  # [B, T, U, n_components]
-        phi = phi.sum(dim=3)  # [B, T, U]
+        # Compute attention weights φ: [B, U, n_components]
+        phi_components = alpha_exp * torch.exp(-beta_exp * (kappa_exp - u) ** 2)
 
-        w = torch.bmm(phi, c)  # [B, T, embedding_dim]
+        # Sum over components: [B, U] → [B, 1, U]
+        phi = phi_components.sum(dim=-1).unsqueeze(1)
 
-        return w, kappa[:, -1, :]  # [B, T, embedding_dim], [B, n_components]
+        # Optional masking for padded characters
+        if ascii_lengths is not None:
+            mask = torch.arange(U, device=x.device).unsqueeze(0).expand(B, U)
+            mask = mask < ascii_lengths.unsqueeze(1)  # [B, U]
+            mask = mask.unsqueeze(1)  # [B, 1, U]
+            phi = phi.masked_fill(~mask, 0.0)
+
+        # Compute window: [B, 1, U] @ [B, U, V] → [B, 1, V]
+        w = torch.bmm(phi, c)
+
+        return w, new_kappa
 
 
 
 if __name__ == "__main__":
     def test_soft_window():
-        B, T, H, U, V, N = 2, 5, 16, 10, 20, 3  # batch, time, input_dim, seq_len, embedding_dim, n_components
+        B, T, H, U, V, N = 2, 1, 16, 10, 20, 3  # batch, time, input_dim, seq_len, embedding_dim, n_components
         x = torch.randn(B, T, H)
         c = torch.randn(B, U, V)
         model = SoftWindow(input_dim=H, n_components=N)

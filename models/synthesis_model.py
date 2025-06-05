@@ -1,52 +1,111 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from models.bivariate_bernoulli_mixture_head import BivariateBernoulliMixtureHead
 from models.soft_window import SoftWindow
 
 class SynthesisModel(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.embed = nn.Embedding(config.vocab_size, config.embed_dim)
+        self.vocab_size = config.vocab_size
+        self.softwindow = SoftWindow(config.hidden_dim, config.n_heads)
 
-        self.rnn1 = nn.RNN(config.input_dim, config.hidden_dim, config.num_layers, batch_first=True)
-        self.softwindow = SoftWindow(config.hidden_dim, config.n_components)
-        self.rnn2 = nn.RNN(config.hidden_dim+config.embed_dim, config.hidden_dim, config.num_layers, batch_first=True)
-        self.binomialbernoullimixturehead = BivariateBernoulliMixtureHead(config.hidden_dim, config.n_components)
+        self.rnns = []
 
-    def network(self, x, c, hidden=None):
+        for n in range(config.num_layers):
+            if n==0:
+                input_dim = config.input_dim+config.vocab_size
+            else:
+                input_dim = config.input_dim+config.hidden_dim+config.vocab_size
+
+
+            rnn = nn.GRU(
+                input_size=input_dim,
+                hidden_size=config.hidden_dim,
+                num_layers=1,
+                batch_first=True
+            )
+            self.rnns.append(rnn)
+
+        self.rnns = nn.ModuleList(self.rnns)
+
+        self.head = BivariateBernoulliMixtureHead(config.hidden_dim*config.num_layers, config.n_components)
+
+    def network(self, x, c, hidden=None,ascii_lengths=None):
         # hidden: (hidden1, kappa, hidden2) or None
-        if hidden is not None:
-            hidden1, kappa, hidden2 = hidden
+        B, T,_ = x.shape
+        if hidden is None:
+            hidden = [None] * len(self.rnns)
+            kappa = None
+            w0 = torch.zeros((B,1,self.vocab_size),dtype=x.dtype,device=x.device)
         else:
-            hidden1 = hidden2 = kappa = None
+            hidden, kappa, w0 = hidden
 
-        c_emb = self.embed(c)  # [B, U, embed_dim]
-        out, hidden1 = self.rnn1(x, hidden1)
-        window_out, kappa = self.softwindow(out, c_emb, kappa) # B, T, embed_dim
-        out, hidden2 = self.rnn2(torch.cat((out,window_out),dim=-1), hidden2)
+        new_hidden = []
 
-        return out, (hidden1, kappa, hidden2)
+        c_emb = F.one_hot(c,num_classes=self.vocab_size).type(x.dtype)
+
+
+        out = []
+        w = []
+        for t in range(T):
+            out_t, h_t = self.rnns[0](torch.cat((x[:,t:t+1],w0),dim=2), hidden[0])
+            w0, kappa = self.softwindow(out_t,c_emb,kappa,ascii_lengths)         
+            hidden0 = h_t
+            hidden[0]=hidden0
+            out.append(out_t)
+            w.append(w0)
+
+        out = torch.cat(out,dim=1)
+        w = torch.cat(w, dim=1)
+
+        inputs = [out]
+        new_hidden.append(hidden0)
+
+        for i, rnn in enumerate(self.rnns[1:], start=1):
+            out, h = rnn(torch.cat((x,out,w),dim=2), hidden[i])   
+            new_hidden.append(h)
+            inputs.append(out)
+
+
+        new_hidden = (new_hidden, kappa, w)
+        return torch.concat(inputs,dim=-1), new_hidden
 
     def forward(self, x, c, hidden=None):
         out, hidden = self.network(x, c, hidden)
-        means, stdevs, log_weights, correlations, last_logit = self.binomialbernoullimixturehead(out)
+        means, stdevs, log_weights, correlations, last_logit = self.head(out)
         return means, stdevs, log_weights, correlations, last_logit, hidden
 
-    def loss(self, x, c, y, lengths, hidden=None):
-        out, hidden = self.network(x, c, hidden)
-        loss = self.binomialbernoullimixturehead.loss(out, y, lengths)
+    def loss(self, x, c, y, lengths = None, ascii_lengths=None,hidden=None):
+        out, hidden = self.network(x, c, hidden, ascii_lengths)
+        loss = self.head.loss(out, y, lengths)
         return loss, hidden
 
     @torch.no_grad()
-    def sample(self, x, c, hidden=None):
+    def sample(self, x, c, hidden=None, temperature = 1):
         out, hidden = self.network(x, c, hidden)
-        sample = self.binomialbernoullimixturehead.sample(out)
+        sample = self.head.sample(out ,temperature=temperature)
         return sample, hidden
+
+    @torch.no_grad()
+    def full_sample(self, ascii, device,  temperature = 1.0,max_length=1000,):
+        self.eval()
+
+        start = torch.zeros((1, 1, 3), dtype=torch.float32).to(device)  # B, T, F
+
+        generated = start
+        hidden = None
+        for _ in range(max_length):
+            sample, hidden = self.sample(generated[:, -1:],ascii, hidden, temperature=temperature)
+            generated = torch.cat((generated, sample.unsqueeze(0).unsqueeze(0)), dim=1)
+
+        return generated
+
 
     @torch.no_grad()
     def plot_heatmap(self, y, x, c, hidden=None, save_path=None):
         out, hidden = self.network(x, c, hidden)
-        self.binomialbernoullimixturehead.plot_heatmap(y, out, save_path=save_path)
+        self.head.plot_heatmap(y, out, save_path=save_path)
 
 # ---------------------------------------------------------------
 # Test block
@@ -58,8 +117,9 @@ if __name__ == "__main__":
     config = SimpleNamespace(
         input_dim=10,
         hidden_dim=32,
-        num_layers=1,
-        n_components=5,
+        num_layers=3,
+        n_components=10,
+        n_heads=5,
         vocab_size=40,
         embed_dim=16
     )
@@ -96,3 +156,32 @@ if __name__ == "__main__":
     sample, _ = model.sample(sample_input, c_sample)
     print("\nSampling:")
     print("Sample shape:", sample.shape)
+
+
+    def test_stepwise_vs_full_forward(model, x, c, tolerance=1e-5):
+        model.eval()
+        batch_size, seq_len, input_dim = x.shape
+
+        # --- Full-sequence forward pass ---
+        full_out, full_hidden = model.network(x, c)
+
+        # --- Step-by-step forward pass ---
+        stepwise_outputs = []
+        hidden = None
+        for t in range(seq_len):
+            out_t, hidden = model.network(x[:, t:t+1], c, hidden)
+            stepwise_outputs.append(out_t)
+
+        stepwise_out = torch.cat(stepwise_outputs, dim=1)
+
+        # --- Compare outputs ---
+        if not torch.allclose(full_out, stepwise_out, atol=tolerance):
+            diff = (full_out - stepwise_out).abs().max()
+            print(f"[❌] Stepwise and full outputs differ. Max diff: {diff.item():.6f}")
+        else:
+            print("[✅] Stepwise and full outputs match.")
+
+        # Optional: return tensors for inspection
+        return full_out, stepwise_out
+
+    test_stepwise_vs_full_forward(model, x, c)

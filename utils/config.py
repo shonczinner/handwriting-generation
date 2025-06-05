@@ -5,10 +5,9 @@ import os
 @dataclass
 class Config:
     # Data and Training
-    batch_size: int = 32
-    max_seq_len: int = 500
     learning_rate: float = 1e-4
-    epochs: int = 100
+    batch_size: int = 32
+    epochs: int = 50
     train_pct: float = 0.8
     val_pct: float = 0.1
     test_pct: float = 0.1
@@ -16,12 +15,12 @@ class Config:
     # Apply to all Models
     input_dim: int = 3
     hidden_dim: int = 400
-    num_layers: int = 1
+    num_layers: int = 3
     n_components: int = 20
+    n_heads: int = 10
 
     # for synthesis 
     vocab_size: int = 0 # taken from tokenizer
-    embed_dim: int = 64
 
     def save(self, path: str):
         with open(os.path.join(path,"config.json"), 'w') as f:

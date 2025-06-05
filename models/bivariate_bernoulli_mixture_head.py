@@ -1,168 +1,171 @@
+import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import MultivariateNormal, Bernoulli, Independent
-import matplotlib.pyplot as plt
-import numpy as np
+from torch.distributions import MultivariateNormal, Bernoulli
+
+LOG_TWO_PI = math.log(2 * math.pi)
 
 class BivariateBernoulliMixtureHead(nn.Module):
     def __init__(self, input_dim, n_components):
+        """
+        Args:
+            input_dim (int): Input dimension from the network.
+            n_components (int): Number of mixture components.
+        """
         super().__init__()
         self.n_components = n_components
-        self.output_dim = 6 * n_components + 1
+        self.output_dim = 6 * n_components + 1  # 2 means + 2 stds + 1 weight + 1 corr per component, plus 1 Bernoulli
         self.net = nn.Linear(input_dim, self.output_dim)
 
     def forward(self, x):
-        # x: [B, T, H]
-        B,_,_ = x.shape
+        """
+        Args:
+            x (Tensor): [B, T, input_dim] — batched RNN output.
+
+        Returns:
+            Tuple of tensors:
+                means:         [B, T, n_components, 2]
+                stdevs:        [B, T, n_components, 2]
+                log_weights:   [B, T, n_components]
+                correlations:  [B, T, n_components]
+                last_prob:     [B, T]
+        """
         out = self.net(x)  # [B, T, 6*n + 1]
+        return self._parse_raw_outputs(out)
 
-        # Split into mixture outputs and final Bernoulli
-        mixture, last_prob = out[:, :, :-1], out[:, :, -1]
+    def _parse_raw_outputs(self, out):
+        # out: [B, T, 6*n + 1]
+        mixture, last_prob = out[..., :-1], out[..., -1]  # [B, T, 6*n], [B, T]
 
-        # Chunk mixture into parameter groups
         means, std_raw, weight_raw, corr_raw = torch.split(
             mixture,
             [2 * self.n_components, 2 * self.n_components, self.n_components, self.n_components],
-            dim=2
+            dim=-1
         )
 
-        means = means.reshape(B,-1,self.n_components,2)
-        stdevs = torch.exp(std_raw).reshape(B,-1,self.n_components,2)
-        log_weights = F.log_softmax(weight_raw, dim=2)
-        correlations = torch.tanh(corr_raw)
-        last_logit = last_prob
+        means = means.view(*out.shape[:-1], self.n_components, 2)        # [B, T, C, 2]
+        stdevs = torch.exp(std_raw).view(*out.shape[:-1], self.n_components, 2)  # [B, T, C, 2]
+        log_weights = F.log_softmax(weight_raw, dim=-1)                 # [B, T, C]
+        correlations = torch.tanh(corr_raw).clamp(min=-0.999,max=0.999)                           # [B, T, C]
 
-        return means, stdevs, log_weights, correlations, last_logit
-    
-    def loss(self, x, y, lengths):
-        # x: [B, T, H]   (RNN output)
-        # y: [B, T, 3]   (Target)
-        
-        means, stdevs, log_weights, correlations, last_logit = self.forward(x)  # [B, T, C, 2], [B, T, C], etc.
+        return means, stdevs, log_weights, correlations, last_prob
 
-        # Compute Gaussian log-likelihood
-        z0 = (y[..., :2].unsqueeze(-2) - means) / stdevs  # [B, T, C, 2]
-        Z = z0[..., 0]**2 + z0[..., 1]**2 - 2 * correlations * z0[..., 0] * z0[..., 1]
-
-        log_2pi = torch.log(torch.tensor(2 * torch.pi, device=stdevs.device, dtype=stdevs.dtype))
-        log_probs = -0.5 * Z / (1 - correlations**2) \
-                    - log_2pi \
-                    - torch.log(stdevs[..., 0]) \
-                    - torch.log(stdevs[..., 1]) \
-                    - 0.5 * torch.log(1 - correlations**2)
-
-        gaussian_loss = -torch.logsumexp(log_weights + log_probs, dim=-1)  # [B, T]
-        bernoulli_loss = F.binary_cross_entropy_with_logits(last_logit, y[..., 2], reduction='none')  # [B, T]
-
-        total_loss = gaussian_loss + bernoulli_loss  # [B, T]
-
-        # Mask padding
-        max_len = y.size(1)
-        mask = torch.arange(max_len, device=lengths.device)[None, :] < lengths[:, None]  # [B, T]
-        masked_loss = total_loss * mask  # [B, T]
-
-        mean_loss = masked_loss.sum() / mask.sum()  # scalar
-        return mean_loss
-
-
-    @torch.no_grad() 
-    def sample(self, x):
-        # x: [1, 1, H]
-        means, stdevs, log_weights, correlations, last_logit = self.forward(x)
-        # Output shapes: [1, 1, n, 2], [1, 1, n, 2], [1, 1, n], [1, 1, n], [1, 1]
-
-        means = means[0, 0]             # [n, 2]
-        stdevs = stdevs[0, 0]           # [n, 2]
-        log_weights = log_weights[0, 0] # [n]
-        correlations = correlations[0, 0] # [n]
-        last_logit = last_logit[0, 0]     # scalar
-
-        weights = torch.exp(log_weights)  # [n]
-        idx = torch.distributions.Categorical(weights).sample()  # scalar
-
-        selected_mean = means[idx]        # [2]
-        selected_stdev = stdevs[idx]      # [2]
-        selected_corr = correlations[idx] # scalar
-
-        cov = self._build_covariance_matrix(selected_stdev, selected_corr)  # [2, 2]
-
-        mvn = MultivariateNormal(loc=selected_mean, covariance_matrix=cov)
-        gaussian_sample = mvn.sample()  # [2]
-
-        bernoulli_sample = Bernoulli(logits=last_logit).sample()  # scalar
-
-        full_sample = torch.cat([gaussian_sample, bernoulli_sample.unsqueeze(0)], dim=0)  # [3]
-        return full_sample.unsqueeze(0).unsqueeze(0)  # [1, 1, 3]
-    
-
-
-    @torch.no_grad()
-    def plot_heatmap(self, y, x, save_path=None):
-        pass
-
-
-    @staticmethod
-    def _build_covariance_matrix(stdevs, correlations):
+    def loss(self, x, y, lengths=None):
         """
-        Build 2x2 covariance matrices from stddevs and correlations.
+        Computes loss over a sequence, with optional masking for padded positions.
 
-        Parameters:
-            stdevs: Tensor of shape [..., 2]
-            correlations: Tensor of shape [...]
+        Args:
+            x (Tensor): [B, T, input_dim] — input features.
+            y (Tensor): [B, T, 3] — ground truth (dx, dy, lift).
+            lengths (Tensor or None): [B] — actual sequence lengths (before padding).
+                                    If None, no masking is applied.
 
         Returns:
-            cov: Tensor of shape [..., 2, 2]
+            Scalar tensor — average loss.
         """
-        sigma_x, sigma_y = stdevs[..., 0], stdevs[..., 1]
-        rho = correlations
+        B, T, _ = x.shape
+        device = x.device
 
-        shape = sigma_x.shape
-        cov = torch.zeros(*shape, 2, 2, device=stdevs.device)
+        means, stdevs, log_weights, correlations, last_logit = self.forward(x)
 
-        cov[..., 0, 0] = sigma_x ** 2
-        cov[..., 1, 1] = sigma_y ** 2
-        cov[..., 0, 1] = cov[..., 1, 0] = rho * sigma_x * sigma_y
+        z = (y[:, :, :2].unsqueeze(2) - means) / stdevs  # [B, T, C, 2]
+        log_probs = self._bivariate_gaussian_log_prob(z, stdevs, correlations)  # [B, T, C]
 
+        gaussian_loss = -torch.logsumexp(log_weights + log_probs, dim=-1)  # [B, T]
+        bernoulli_loss = F.binary_cross_entropy_with_logits(
+            last_logit, y[:, :, 2], reduction='none'
+        )  # [B, T]
+
+        total_loss = gaussian_loss + bernoulli_loss  # [B, T]
+        assert not torch.isnan(total_loss).any(), "NaN detected in loss computation!"
+
+        if lengths is not None:
+            mask = torch.arange(T, device=device).unsqueeze(0) < lengths.unsqueeze(1)  # [B, T]
+            total_loss = total_loss * mask  # [B, T]
+            return total_loss.sum() / mask.sum()
+        else:
+            return total_loss.mean()
+
+
+
+    def _bivariate_gaussian_log_prob(self, z, stdevs, correlations):
+        """
+        Computes log-likelihood of z under bivariate Gaussian mixture.
+
+        Args:
+            z:            [B, T, C, 2]
+            stdevs:       [B, T, C, 2]
+            correlations: [B, T, C]
+
+        Returns:
+            log_probs:    [B, T, C]
+        """
+        z1, z2 = z[..., 0], z[..., 1]
+        corr_sq = correlations ** 2
+        one_minus_corr_sq = 1 - corr_sq
+
+        Z = (z1**2 + z2**2 - 2 * correlations * z1 * z2) / one_minus_corr_sq
+        log_det = (
+            torch.log(stdevs[..., 0]) +
+            torch.log(stdevs[..., 1]) +
+            0.5 * torch.log1p(-corr_sq)
+        )
+
+        return -0.5 * Z - log_det - LOG_TWO_PI
+
+    @torch.no_grad()
+    def sample(self, x, temperature=1.0):
+        """
+        Samples a single output from the mixture model.
+        Args:
+            x (Tensor): [1, 1, H] — hidden state from RNN.
+            temperature (float): Controls sampling randomness.
+        Returns:
+            Tensor: [3] — (delta_x, delta_y, lift_point)
+        """
+        device = x.device  # 🔐 capture device
+        x = x.squeeze(0).squeeze(0)  # [H]
+
+        out = self.net(x)  # [6*n + 1]
+        means, stdevs, log_weights, correlations, last_logit = self._parse_raw_outputs(out.unsqueeze(0).unsqueeze(0))
+
+        means = means.squeeze(0).squeeze(0)             # [C, 2]
+        stdevs = stdevs.squeeze(0).squeeze(0) * temperature  # [C, 2]
+        log_weights = log_weights.squeeze(0).squeeze(0) / temperature  # [C]
+        correlations = correlations.squeeze(0).squeeze(0)  # [C]
+
+        weights = torch.softmax(log_weights, dim=-1)
+        idx = torch.distributions.Categorical(weights).sample()
+
+        mean = means[idx]
+        stdev = stdevs[idx]
+        corr = correlations[idx]
+
+        cov = self._build_covariance_matrix(stdev, corr).to(device)  # [2, 2]
+        mvn = MultivariateNormal(loc=mean.to(device), covariance_matrix=cov)
+        gaussian_sample = mvn.sample()  # [2]
+
+        bernoulli_sample = Bernoulli(logits=last_logit.squeeze().to(device) / temperature).sample()  # scalar
+
+        return torch.cat([gaussian_sample, bernoulli_sample.unsqueeze(0)], dim=0).to(device)  # [3]
+
+    @staticmethod
+    def _build_covariance_matrix(stdevs, correlation):
+        """
+        Builds 2x2 covariance matrix from stdevs and correlation.
+
+        Args:
+            stdevs (Tensor): [2] — standard deviations.
+            correlation (Tensor): scalar — correlation coefficient.
+
+        Returns:
+            Tensor: [2, 2] covariance matrix.
+        """
+        sx, sy = stdevs[0], stdevs[1]
+        rho = correlation
+        cov = torch.tensor([
+            [sx**2, rho * sx * sy],
+            [rho * sx * sy, sy**2]
+        ], device=stdevs.device)
         return cov
-
-
-if __name__ == "__main__":
-    from pathlib import Path
-    from constants import TEST_RESULTS_PATH 
-    torch.manual_seed(42)
-
-    B, T, H = 4, 10, 32  # Batch size, time steps, input dimension
-    n_components = 5
-
-    # Create random input and target tensors
-    x = torch.randn(B, T, H)
-    y = torch.cat([torch.randn(B, T, 2), torch.randint(0, 2, (B, T, 1)).float()], dim=-1)
-
-    # Create random sequence lengths (simulate padding scenario)
-    lengths = torch.randint(low=5, high=T + 1, size=(B,))  # lengths ∈ [5, 10]
-
-    # Zero out padding positions in y to simulate realistic padded input
-    for i in range(B):
-        y[i, lengths[i]:] = 0.0  # pad with zeros (dummy values)
-
-    # Initialize model
-    model = BivariateBernoulliMixtureHead(input_dim=H, n_components=n_components)
-
-    # Forward pass
-    means, stdevs, log_weights, correlations, last_logit = model(x)
-    print("Means shape:", means.shape)
-    print("Stdevs shape:", stdevs.shape)
-    print("Log Weights shape:", log_weights.shape)
-    print("Correlations shape:", correlations.shape)
-    print("Last logit shape:", last_logit.shape)
-
-    # Compute loss
-    loss = model.loss(x, y, lengths)
-    print("Loss shape:", loss.shape)  # Should be scalar
-    print("Loss sample:", loss.item())
-
-    # Sample from the model using last timestep of first batch
-    sample = model.sample(x[0:1, -1:, :])
-    print("Sample shape:", sample.shape)  # Should be [1, 1, 3]
-    print("Sample example:", sample[0, 0])

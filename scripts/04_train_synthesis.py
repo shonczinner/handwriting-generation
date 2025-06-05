@@ -27,7 +27,7 @@ class SynthesisTrainer:
         self.model_path = os.path.join(self.save_path, "model.pth")
 
         self.model = SynthesisModel(config).to(device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=config.learning_rate)
+        self.optimizer = torch.optim.RMSprop(self.model.parameters(), lr=config.learning_rate)
         self.loss_fn = torch.nn.GaussianNLLLoss()
 
         self.train_losses, self.val_losses = [], []
@@ -62,15 +62,14 @@ class SynthesisTrainer:
         total_loss = 0
 
         with torch.set_grad_enabled(train):
-            for x, y, lengths, ascii, ascii_length in loader:
+            for x, y, lengths, ascii, ascii_lengths in loader:
                 # x, y, lengths = x.to(self.device), y.to(self.device), lengths.to(self.device)
                 # ascii, ascii_length = ascii.to(self.device), ascii_length.to(self.device)
 
                 if train:
                     self.optimizer.zero_grad()
 
-                # Assume model.loss accepts (x, y, lengths)
-                loss, _ = self.model.loss(x, ascii, y, lengths)
+                loss, _ = self.model.loss(x, ascii, y, lengths, ascii_lengths)
 
                 if train:
                     loss.backward()
@@ -99,8 +98,9 @@ class SynthesisTrainer:
         print(f"Test Loss: {test_loss:.4f}")
 
 if __name__ == "__main__":
-    from constants import PROCESSED_STROKES_PATH, RAW_ASCII_PATH
+    from constants import PROCESSED_STROKES_PATH, RAW_ASCII_PATH, PROCESSED_STROKES_STATS_PATH
     from utils.tokenizer import CharTokenizer
+    from utils.display_strokes import plot_tensor
 
     config = Config()
 
@@ -114,8 +114,14 @@ if __name__ == "__main__":
 
     df_ascii = pd.read_csv(RAW_ASCII_PATH)
 
-    tokenizer = CharTokenizer("".join(df_ascii["text"].astype(str).to_list())) # only do if not already done
-    tokenizer.save(os.path.join(SAVE_PATH,"tokenizer.json"))
+    os.makedirs(os.path.join(SAVE_PATH, "synthesis"), exist_ok=True)
+    tokenizer_path = os.path.join(SAVE_PATH, "synthesis/tokenizer.json")
+
+    if not os.path.exists(tokenizer_path):
+        tokenizer = CharTokenizer("".join(df_ascii["text"].astype(str).to_list()))
+        tokenizer.save(tokenizer_path)
+    else:
+        tokenizer = CharTokenizer.load(tokenizer_path)
 
     config.vocab_size = tokenizer.vocab_size
 
@@ -141,6 +147,9 @@ if __name__ == "__main__":
 
         tokens = torch.tensor(tokenizer.encode(str(ascii_group["text"].item())), dtype=torch.long).to(device)
         ascii.append(tokens)
+    
+    # i=5242
+    # plot_tensor(strokes[i],PROCESSED_STROKES_STATS_PATH,tokenizer.decode(ascii[i].cpu().numpy()))
 
     trainer = SynthesisTrainer(strokes,ascii,config,device)
     trainer.train()

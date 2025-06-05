@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import pandas as pd
 import math
+import torch
 
 def plot_strokes(df, ascii=None, save_path=None):
     line_groups = [l_g.reset_index(drop=True) for _, l_g in df.groupby("line")]
@@ -39,9 +40,29 @@ def plot_strokes(df, ascii=None, save_path=None):
         axes[j].axis("off")
 
     if save_path is not None:
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        plt.savefig(save_path, format='svg', bbox_inches='tight')
 
     plt.show()
+
+def tensor_to_df(output, denormalize_stats=None):
+    df = pd.DataFrame(output.squeeze().detach().cpu().numpy(), columns=['delta_x', 'delta_y', 'lift_point'])
+    df['line'] = 0
+
+    if denormalize_stats is not None:
+        stats = pd.read_csv(denormalize_stats).set_index('stat')['value']
+        mu_dx = stats['mu_dx']
+        sd_dx = stats['sd_dx']
+        mu_dy = stats['mu_dy']
+        sd_dy = stats['sd_dy']
+
+        df['delta_x'] = df['delta_x'] * sd_dx + mu_dx
+        df['delta_y'] = df['delta_y'] * sd_dy + mu_dy
+
+    return df
+
+def plot_tensor(output, denormalize_stats=None, ascii = None, save_path=None):
+    ascii = pd.DataFrame({'text':[ascii]})
+    plot_strokes(tensor_to_df(output, denormalize_stats=denormalize_stats),ascii=ascii,save_path=save_path)
 
 if __name__ == "__main__":
     import os
@@ -56,6 +77,6 @@ if __name__ == "__main__":
     ascii = get_ascii(code)
 
     os.makedirs(TEST_RESULTS_PATH,exist_ok=True)
-    save_path = os.path.join(TEST_RESULTS_PATH,"strokeTest.png")
+    save_path = os.path.join(TEST_RESULTS_PATH,"strokeTest.svg")
 
     plot_strokes(df,ascii,save_path)

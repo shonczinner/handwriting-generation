@@ -1,98 +1,172 @@
 import torch
 import torch.nn as nn
 from models.bivariate_bernoulli_mixture_head import BivariateBernoulliMixtureHead
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+
 
 class PredictionModel(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.rnn = nn.RNN(config.input_dim, config.hidden_dim, config.num_layers, batch_first=True)
 
-        self.binomialbernoullimixturehead = BivariateBernoulliMixtureHead(config.hidden_dim, config.n_components)
+        # Multilayer RNN with skip connections
+
+        self.rnns = []
+        for n in range(config.num_layers):
+            if n==0:
+                input_dim = config.input_dim
+            else:
+                input_dim = config.input_dim+config.hidden_dim
+            rnn = nn.GRU(
+                input_size=input_dim,
+                hidden_size=config.hidden_dim,
+                num_layers=1,
+                batch_first=True
+            )
+            self.rnns.append(rnn)
+
+        self.rnns = nn.ModuleList(self.rnns)
+
+        self.head = BivariateBernoulliMixtureHead(config.hidden_dim*config.num_layers, config.n_components)
+    
+
+    def network(self, x, hidden=None):
+        """
+        Forward pass through stacked RNNs
+
+        Args:
+            x: [B, T, input_dim]
+            hidden: list of hidden states (or None)
+
+        Returns:
+            out: [B, T, hidden_dim]
+            new_hidden: list of final hidden states for each layer
+        """
+        if hidden is None:
+            hidden = [None] * len(self.rnns)
+
+        new_hidden = []
+
+        inputs = []
+
+        out, h = self.rnns[0](x, hidden[0])              # First RNN layer
+        new_hidden.append(h)
+
+        inputs.append(out)
+
+        for i, rnn in enumerate(self.rnns[1:], start=1):
+            out, h = rnn(torch.concat((x,out),dim=-1), hidden[i])               # Next RNN layer
+            new_hidden.append(h)
+            inputs.append(out)
+
+        return torch.concat(inputs,dim=-1), new_hidden
 
     def forward(self, x, hidden=None):
-        # x: [batch, seq_len, input_dim]
-        # h: None or [num_layers, batch, hidden_size]
-        out, hidden = self.rnn(x, hidden) # [batch, seq_len, hidden],[num_layers, batch, hidden_size]
-        means, stdevs, log_weights, correlations, last_logit = self.binomialbernoullimixturehead(out) # 
-        return means, stdevs, log_weights, correlations, last_logit, hidden # ..., [num_layers, batch, hidden_size]
-    
-    def loss(self,x,y,lengths,hidden=None):
-        # x: [batch, seq_len, input_dim]
-        # h: None or [num_layers, batch, hidden_size]
-        out, hidden = self.rnn(x, hidden) # [batch, seq_len, hidden],[num_layers, batch, hidden_size]
-        loss = self.binomialbernoullimixturehead.loss(out,y,lengths) # 
-        return loss, hidden # ..., [num_layers, batch, hidden_size]
-    
-    @torch.no_grad()
-    def sample(self, x, hidden=None):
-        # x: [1, 1, input_dim]
-        # h: None or [num_layers, batch, hidden_size]
-        out, hidden = self.rnn(x, hidden) # [1, 1, hidden],[num_layers, batch, hidden_size]
-        sample = self.binomialbernoullimixturehead.sample(out) # 
-        return sample, hidden # [1, 1, 3] [num_layers, batch, hidden_size]
-    
+        """
+        Forward model prediction.
+
+        Args:
+            x: [B, T, input_dim]
+
+        Returns:
+            Tuple from mixture head + hidden states
+        """
+        out, hidden = self.network(x, hidden)
+        return (*self.head(out), hidden)
+
+    def loss(self, x, y, hidden=None, lengths=None):
+        """
+        Computes masked loss for a batch of sequences.
+
+        Args:
+            x: [B, T, input_dim]
+            y: [B, T, 3]
+            lengths: [B] or None
+
+        Returns:
+            Scalar loss, updated hidden states
+        """
+        out, hidden = self.network(x, hidden)
+        loss = self.head.loss(out, y, lengths=lengths)
+        return loss, hidden
 
     @torch.no_grad()
-    def plot_heatmap(self, y, x, hidden=None,save_path=None):
-        # x: [1, T, input_dim]
-        # h: None or [num_layers, batch, hidden_size]
-        out, hidden = self.rnn(x, hidden) # [1, 1, hidden],[num_layers, batch, hidden_size]
-        self.binomialbernoullimixturehead.plot_heatmap(y,out,save_path=save_path) 
+    def sample(self, x, hidden=None, temperature=1.0):
+        """
+        Samples next output given last input.
+
+        Args:
+            x: [1, 1, 3]
+            temperature: float
+
+        Returns:
+            sample: [3], hidden
+        """
+        out, hidden = self.network(x, hidden)
+        sample = self.head.sample(out, temperature)  # [1, 1, H] -> [1, H]
+        return sample, hidden
+    
+    @torch.no_grad()
+    def full_sample(self,device, hidden=None,temperature=1.0,max_length=500):
+        self.eval()
+
+        start = torch.zeros((1,1,3), dtype=torch.float32, device=device)  # T,F
+
+        generated = start
+        hidden = None
+        for _ in range(max_length):
+            sample, hidden = self.sample(generated[:,-1:], hidden,temperature=temperature)
+            generated = torch.cat((generated, sample.unsqueeze(0).unsqueeze(0)), dim=1)
+
+        return generated
+
+    @torch.no_grad()
+    def plot_heatmap(self, y, x, hidden=None, save_path=None):
+        """
+        Heatmap plotting of predictions.
+
+        Args:
+            y: [1, T, 3]
+            x: [1, T, input_dim]
+        """
+        out, hidden = self.network(x, hidden)
+        self.head.plot_heatmap(y, out, save_path=save_path)
 
 
-
-
-
+# === Demo usage ===
 if __name__ == "__main__":
     from types import SimpleNamespace
 
-    # Dummy config for testing
     config = SimpleNamespace(
-        input_dim=10,
+        input_dim=3,
         hidden_dim=32,
-        num_layers=1,
-        n_components=5  # number of mixture components
+        num_layers=2,
+        n_components=5
     )
 
-    # Instantiate the model
     model = PredictionModel(config)
 
-    # Dummy input (batch_size=4, sequence_length=20, input_dim=config.input_dim)
-    batch_size = 4
-    seq_len = 20
-    x = torch.randn(batch_size, seq_len, config.input_dim)
-
-    # Simulate sequence lengths (e.g., as if sequences were padded)
-    lengths = torch.randint(low=5, high=seq_len + 1, size=(batch_size,))
-
-    # Dummy target: 2D points + bernoulli indicator
+    B, T = 4, 20
+    x = torch.randn(B, T, config.input_dim)
     y = torch.cat([
-        torch.randn(batch_size, seq_len, 2),
-        torch.randint(0, 2, (batch_size, seq_len, 1)).float()
+        torch.randn(B, T, 2),
+        torch.randint(0, 2, (B, T, 1)).float()
     ], dim=-1)
-
-    # Zero out padded targets (optional but good for testing)
-    for i in range(batch_size):
-        y[i, lengths[i]:] = 0.0
 
     # --- Forward pass ---
     means, stdevs, log_weights, correlations, last_logit, hidden = model(x)
-    print("Forward pass:")
-    print("Means shape:", means.shape)
-    print("Stdevs shape:", stdevs.shape)
-    print("Log Weights shape:", log_weights.shape)
-    print("Correlations shape:", correlations.shape)
-    print("Last Logit shape:", last_logit.shape)
+    print("Forward pass shapes:")
+    print("Means:", means.shape)           # [B, T, C, 2]
+    print("Stdevs:", stdevs.shape)         # [B, T, C, 2]
+    print("Log Weights:", log_weights.shape)  # [B, T, C]
+    print("Correlations:", correlations.shape)  # [B, T, C]
+    print("Last Logit:", last_logit.shape)     # [B, T]
 
-    # --- Loss computation ---
-    loss, hidden = model.loss(x, y, lengths)
-    print("\nLoss computation:")
-    print("Loss:", loss.item())
+    # --- Loss ---
+    lengths = torch.tensor([20, 18, 15, 12])  # example padding lengths
+    loss, _ = model.loss(x, y, lengths=lengths)
+    print("\nLoss:", loss.item())
 
     # --- Sampling ---
-    sample_input = x[0:1, -1:, :]  # last timestep of first sample
-    sample, _ = model.sample(sample_input)
-    print("\nSampling:")
-    print("Sample shape:", sample.shape)
+    x_sample = torch.zeros(1, 1, 3)
+    sample, _ = model.sample(x_sample)
+    print("\nSample shape:", sample.shape)
     print("Sample:", sample)
