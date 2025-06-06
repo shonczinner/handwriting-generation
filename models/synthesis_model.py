@@ -33,6 +33,8 @@ class SynthesisModel(nn.Module):
 
     def network(self, x, c, hidden=None,ascii_lengths=None):
         # hidden: (hidden1, kappa, hidden2) or None
+        # x: [B, T, H] - input 
+        # c: [B, U] - character sequence (context)
         B, T,_ = x.shape
         if hidden is None:
             hidden = [None] * len(self.rnns)
