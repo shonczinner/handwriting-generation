@@ -95,15 +95,21 @@ class SynthesisModel(nn.Module):
         return sample, hidden
 
     @torch.no_grad()
-    def full_sample(self, ascii, device,  hidden = None, start = None, temperature = 1.0,max_length=1000,):
+    def full_sample(self, ascii, device,  hidden = None, start = None, temperature = 1.0,max_length=1000):
         self.eval()
         if start is None:
             start = torch.zeros((1, 1, 3), dtype=torch.float32).to(device)  # B, T, F
+
+        U = ascii.shape[1]
 
         generated = start
         for _ in range(max_length):
             sample, hidden = self.sample(generated[:, -1:],ascii, hidden, temperature=temperature)
             generated = torch.cat((generated, sample.unsqueeze(0).unsqueeze(0)), dim=1)
+            # termination condition
+            phi = hidden[1][1]
+            if phi[:,:,U]==phi.max():
+                break
 
         return generated
 

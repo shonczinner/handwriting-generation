@@ -47,7 +47,7 @@ if __name__ == "__main__":
     ascii = torch.concat((prime_ascii,ascii),dim=-1)
     prime_hidden = model.get_primed_hidden(prime_tensor,ascii)
     # Generate sample
-    output = model.full_sample(ascii, device, hidden = prime_hidden, start=prime_tensor, max_length=500, temperature=1.0)
+    output = model.full_sample(ascii, device, hidden = prime_hidden, start=prime_tensor, max_length=500, temperature=0.7)
 
     # Plot strokes with denormalized values
     save_path = os.path.join(model_folder,"primed_sample.svg")

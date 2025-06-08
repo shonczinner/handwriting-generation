@@ -14,16 +14,16 @@ class SoftWindow(nn.Module):
         self.n_components = n_components
         self.linear = nn.Linear(input_dim, 3 * n_components)
 
-    def forward(self, x, c, kappa=None, ascii_lengths=None):
+    def forward(self, x, c, hidden=None, ascii_lengths=None):
         """
         Args:
             x: [B, 1, H] - input at current time step
             c: [B, U, V] - character sequence (context)
-            kappa: [B, n_components] - previous attention centers (optional)
+            hidden: [B, n_components] - previous attention centers (optional), phi_termination
             ascii_lengths: [B] - actual lengths of character sequences (optional)
         Returns:
             w: [B, 1, V] - weighted sum of context (window)
-            new_kappa: [B, n_components] - updated attention centers
+            hidden:, new_kappa: [B, n_components] - updated attention centers and phi_termination
         """
 
         B, T, H = x.shape
@@ -32,8 +32,10 @@ class SoftWindow(nn.Module):
         assert B == Bc, "Batch size mismatch between input x and context c"
 
         # Initialize kappa if not provided
-        if kappa is None:
+        if hidden is None:
             kappa = torch.zeros(B, self.n_components, device=x.device, dtype=x.dtype)
+        else:
+            kappa = hidden[0]
 
         # Compute attention parameters: alpha, beta, kappa
         linear_out = self.linear(x).squeeze(1)  # [B, 3 * n_components]
@@ -44,18 +46,19 @@ class SoftWindow(nn.Module):
         new_kappa = kappa + torch.exp(kappa_hat-3.9) # [B, n_components] #-3.9 makes window steps start smaller
 
         # Prepare character positions u: [1, U, 1]
-        u = torch.arange(U, device=x.device, dtype=x.dtype).view(1, U, 1)
+        u = torch.arange(U+1, device=x.device, dtype=x.dtype).view(1, U+1, 1)
 
         # Broadcast parameters to shape [B, U, n_components]
         kappa_exp = new_kappa.unsqueeze(1)  # [B, 1, n_components]
         beta_exp = beta.unsqueeze(1)        # [B, 1, n_components]
         alpha_exp = alpha.unsqueeze(1)      # [B, 1, n_components]
 
-        # Compute attention weights φ: [B, U, n_components]
+        # Compute attention weights φ: [B, U+1, n_components]
         phi_components = alpha_exp * torch.exp(-beta_exp * (kappa_exp - u) ** 2)
 
-        # Sum over components: [B, U] → [B, 1, U]
-        phi = phi_components.sum(dim=-1).unsqueeze(1)
+        # Sum over components: [B, U] → [B, 1, U+1]
+        phi_termination = phi_components.sum(dim=-1).unsqueeze(1)
+        phi = phi_termination[:,:,:-1]
 
         # Optional masking for padded characters
         if ascii_lengths is not None:
@@ -67,7 +70,7 @@ class SoftWindow(nn.Module):
         # Compute window: [B, 1, U] @ [B, U, V] → [B, 1, V]
         w = torch.bmm(phi, c)
 
-        return w, new_kappa
+        return w, (new_kappa,phi_termination)
 
 
 
@@ -81,7 +84,7 @@ if __name__ == "__main__":
         w, new_kappa = model(x, c)
 
         assert w.shape == (B, T, V), f"Expected w shape {(B,T,V)}, got {w.shape}"
-        assert new_kappa.shape == (B, N), f"Expected kappa shape {(B,N)}, got {new_kappa.shape}"
+        assert new_kappa[0].shape == (B, N), f"Expected kappa shape {(B,N)}, got {new_kappa[0].shape}"
         print("SoftWindow test passed.")
 
     test_soft_window()
