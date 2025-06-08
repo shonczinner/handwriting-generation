@@ -70,7 +70,7 @@ class SynthesisModel(nn.Module):
             inputs.append(out)
 
 
-        new_hidden = (new_hidden, kappa, w)
+        new_hidden = (new_hidden, kappa, w0)
         return torch.concat(inputs,dim=-1), new_hidden
 
     def forward(self, x, c, hidden=None):
@@ -84,19 +84,23 @@ class SynthesisModel(nn.Module):
         return loss, hidden
 
     @torch.no_grad()
+    def get_primed_hidden(self, prime_x, c, hidden=None):
+        _, hidden = self.network(prime_x, c, hidden)
+        return hidden
+    
+    @torch.no_grad()
     def sample(self, x, c, hidden=None, temperature = 1):
         out, hidden = self.network(x, c, hidden)
         sample = self.head.sample(out ,temperature=temperature)
         return sample, hidden
 
     @torch.no_grad()
-    def full_sample(self, ascii, device,  temperature = 1.0,max_length=1000,):
+    def full_sample(self, ascii, device,  hidden = None, start = None, temperature = 1.0,max_length=1000,):
         self.eval()
-
-        start = torch.zeros((1, 1, 3), dtype=torch.float32).to(device)  # B, T, F
+        if start is None:
+            start = torch.zeros((1, 1, 3), dtype=torch.float32).to(device)  # B, T, F
 
         generated = start
-        hidden = None
         for _ in range(max_length):
             sample, hidden = self.sample(generated[:, -1:],ascii, hidden, temperature=temperature)
             generated = torch.cat((generated, sample.unsqueeze(0).unsqueeze(0)), dim=1)

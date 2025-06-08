@@ -42,7 +42,7 @@ class HandwritingRecorder:
     def record_position(self, x, y):
         while self.drawing:
             current_time = time.time()
-            if (current_time - self.last_time) >= 0.02:  # every 20 ms
+            if (current_time - self.last_time) >= 0.015:  # every 20 ms
                 mouse_x = self.canvas.winfo_pointerx() - self.canvas.winfo_rootx()
                 mouse_y = self.canvas.winfo_pointery() - self.canvas.winfo_rooty()
 
@@ -59,8 +59,8 @@ class HandwritingRecorder:
         Returns strokes as a DataFrame with columns: stroke_id, x, y, time
         """
         rows = []
+        prev_x, prev_y, _ = self.strokes[0][0]
         for stroke_id, stroke in enumerate(self.strokes):
-            prev_x, prev_y, _ = stroke[0]
             for i, point in enumerate(stroke):
                 x, y, _ = point
                 last_point = 1 if i == len(stroke) - 1 else 0
@@ -105,6 +105,7 @@ def df_to_tensor(df, normalize_stats=None):
 
 if __name__ == "__main__":
     from constants import PROCESSED_STROKES_STATS_PATH
+    from utils.display_strokes import plot_tensor
     root = tk.Tk()
     app = HandwritingRecorder(root)
     root.mainloop()
@@ -112,5 +113,7 @@ if __name__ == "__main__":
     df = app.get_stroke_df()
     print(df.head())
 
-    tensor = df_to_tensor(df,PROCESSED_STROKES_STATS_PATH)
+    tensor = df_to_tensor(df,normalize_stats=PROCESSED_STROKES_STATS_PATH)
     print(tensor[0,:5])
+
+    plot_tensor(tensor,denormalize_stats=PROCESSED_STROKES_STATS_PATH)
