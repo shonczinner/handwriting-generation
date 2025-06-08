@@ -124,7 +124,7 @@ class BivariateBernoulliMixtureHead(nn.Module):
         Returns:
             Tensor: [3] — (delta_x, delta_y, lift_point)
         """
-        device = x.device  # 🔐 capture device
+        device = x.device
         x = x.squeeze(0).squeeze(0)  # [H]
 
         out = self.net(x)  # [6*n + 1]
@@ -142,13 +142,11 @@ class BivariateBernoulliMixtureHead(nn.Module):
         stdev = stdevs[idx]
         corr = correlations[idx]
 
-        cov = self._build_covariance_matrix(stdev, corr).to(device)  # [2, 2]
-        mvn = MultivariateNormal(loc=mean.to(device), covariance_matrix=cov)
-        gaussian_sample = mvn.sample()  # [2]
+        gaussian_sample = self._sample_bivariate_gaussian(mean, stdev, corr)
+        bernoulli_sample = Bernoulli(logits=last_logit.squeeze().to(device) / temperature).sample()
 
-        bernoulli_sample = Bernoulli(logits=last_logit.squeeze().to(device) / temperature).sample()  # scalar
+        return torch.cat([gaussian_sample, bernoulli_sample.unsqueeze(0)], dim=0)
 
-        return torch.cat([gaussian_sample, bernoulli_sample.unsqueeze(0)], dim=0).to(device)  # [3]
 
     @staticmethod
     def _build_covariance_matrix(stdevs, correlation):
@@ -164,8 +162,29 @@ class BivariateBernoulliMixtureHead(nn.Module):
         """
         sx, sy = stdevs[0], stdevs[1]
         rho = correlation
-        cov = torch.tensor([
-            [sx**2, rho * sx * sy],
-            [rho * sx * sy, sy**2]
-        ], device=stdevs.device)
+        cov = torch.stack([
+            torch.stack([sx**2, rho * sx * sy], dim=-1),
+            torch.stack([rho * sx * sy, sy**2], dim=-1)
+        ], dim=-2)
         return cov
+    
+    def _sample_bivariate_gaussian(self, mean, stdev, rho):
+        """
+        ONNX-traceable sampling from a bivariate Gaussian using reparameterization.
+
+        Args:
+            mean (Tensor): [2] — mean vector.
+            stdev (Tensor): [2] — standard deviations.
+            rho (Tensor): scalar — correlation coefficient.
+
+        Returns:
+            Tensor: [2] — sample from the bivariate normal.
+        """
+        eps = torch.randn(2, device=mean.device)
+        eps1, eps2 = eps[0], eps[1]
+
+        sx, sy = stdev[0], stdev[1]
+        x = sx * eps1
+        y = sy * (rho * eps1 + torch.sqrt(1 - rho**2 + 1e-6) * eps2)
+
+        return mean + torch.stack([x, y])
