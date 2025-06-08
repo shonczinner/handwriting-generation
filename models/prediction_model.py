@@ -118,18 +118,6 @@ class PredictionModel(nn.Module):
 
         return generated
 
-    @torch.no_grad()
-    def plot_heatmap(self, y, x, hidden=None, save_path=None):
-        """
-        Heatmap plotting of predictions.
-
-        Args:
-            y: [1, T, 3]
-            x: [1, T, input_dim]
-        """
-        out, hidden = self.network(x, hidden)
-        self.head.plot_heatmap(y, out, save_path=save_path)
-
 
 # === Demo usage ===
 if __name__ == "__main__":

@@ -29,10 +29,10 @@ if __name__ == "__main__":
     tokenizer = CharTokenizer.load(os.path.join(model_folder,"tokenizer.json"))
 
     # Generate sample
-    text = "Percy is stinky!"
+    text = "Hello World"
     ascii = torch.tensor(tokenizer.encode(text), dtype=torch.long).to(device).unsqueeze(0)
     # Generate sample
-    output,phis = model.full_sample(ascii, device, max_length=500, temperature=1)
+    output,phis = model.full_sample(ascii, device, max_length=500, temperature=0.5)
 
     # Plot strokes with denormalized values
     save_path = os.path.join(model_folder,"sample.svg")

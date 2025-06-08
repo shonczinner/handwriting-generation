@@ -7,7 +7,7 @@ class Config:
     # Data and Training
     learning_rate: float = 1e-4
     batch_size: int = 32
-    epochs: int = 50
+    epochs: int = 1
     train_pct: float = 0.8
     val_pct: float = 0.1
     test_pct: float = 0.1

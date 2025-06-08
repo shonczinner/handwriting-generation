@@ -41,17 +41,18 @@ if __name__ == "__main__":
     prime_tensor = df_to_tensor(df,PROCESSED_STROKES_STATS_PATH).to(device)
     print(prime_tensor.shape)
 
-    text = " World"
+    text = "World"
     prime_ascii = torch.tensor(tokenizer.encode(prime_text), dtype=torch.long).to(device).unsqueeze(0)
     ascii = torch.tensor(tokenizer.encode(text), dtype=torch.long).to(device).unsqueeze(0)
 
     ascii = torch.concat((prime_ascii,ascii),dim=-1)
     prime_hidden = model.get_primed_hidden(prime_tensor,ascii)
-    # Generate sample
-    output,phis = model.full_sample(ascii, device, hidden = prime_hidden, start=prime_tensor, max_length=500, temperature=0.7)
+
+    output,phis = model.full_sample(ascii, device, hidden = prime_hidden, max_length=1000, temperature=0.7)
 
     # Plot strokes with denormalized values
     save_path = os.path.join(model_folder,"primed_sample.svg")
 
+    plot_tensor(prime_tensor,denormalize_stats=PROCESSED_STROKES_STATS_PATH,ascii=prime_text,save_path= os.path.join(model_folder,"primer_sample.svg"))
     plot_tensor(output,denormalize_stats=PROCESSED_STROKES_STATS_PATH,ascii=text,save_path=save_path)
     plot_attention(text,torch.concat(phis,dim=1)[:,:,-(len(text)+1):].squeeze(), os.path.join(model_folder,"primed_sample_attention.png"))

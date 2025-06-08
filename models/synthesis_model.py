@@ -95,11 +95,10 @@ class SynthesisModel(nn.Module):
         return sample, hidden
 
     @torch.no_grad()
-    def full_sample(self, ascii, device,  hidden = None, start = None, temperature = 1.0,max_length=1000,
-                    plot_attention=False):
+    def full_sample(self, ascii, device,  hidden = None, temperature = 1.0,max_length=1000):
         self.eval()
-        if start is None:
-            start = torch.zeros((1, 1, 3), dtype=torch.float32).to(device)  # B, T, F
+        
+        start = torch.zeros((1, 1, 3), dtype=torch.float32).to(device)  # B, T, F
 
         U = ascii.shape[1]
 
@@ -116,11 +115,6 @@ class SynthesisModel(nn.Module):
 
         return generated,phis
 
-
-    @torch.no_grad()
-    def plot_heatmap(self, y, x, c, hidden=None, save_path=None):
-        out, hidden = self.network(x, c, hidden)
-        self.head.plot_heatmap(y, out, save_path=save_path)
 
 # ---------------------------------------------------------------
 # Test block
