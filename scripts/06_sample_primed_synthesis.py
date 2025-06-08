@@ -14,6 +14,7 @@ if __name__ == "__main__":
     from utils.tokenizer import CharTokenizer
     from utils.get_primed_sequence import HandwritingRecorder, df_to_tensor
     import tkinter as tk
+    from utils.plot_attention import plot_attention
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -47,10 +48,10 @@ if __name__ == "__main__":
     ascii = torch.concat((prime_ascii,ascii),dim=-1)
     prime_hidden = model.get_primed_hidden(prime_tensor,ascii)
     # Generate sample
-    output = model.full_sample(ascii, device, hidden = prime_hidden, start=prime_tensor, max_length=500, temperature=0.7)
+    output,phis = model.full_sample(ascii, device, hidden = prime_hidden, start=prime_tensor, max_length=500, temperature=0.7)
 
     # Plot strokes with denormalized values
     save_path = os.path.join(model_folder,"primed_sample.svg")
 
     plot_tensor(output,denormalize_stats=PROCESSED_STROKES_STATS_PATH,ascii=text,save_path=save_path)
-    
+    plot_attention(text,torch.concat(phis,dim=1)[:,:,-(len(text)+1):].squeeze(), os.path.join(model_folder,"primed_sample_attention.png"))

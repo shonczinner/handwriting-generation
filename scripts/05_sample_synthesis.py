@@ -12,6 +12,7 @@ if __name__ == "__main__":
     from constants import SAVE_PATH, PROCESSED_STROKES_STATS_PATH
     from utils.display_strokes import plot_tensor
     from utils.tokenizer import CharTokenizer
+    from utils.plot_attention import plot_attention
 
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -28,12 +29,13 @@ if __name__ == "__main__":
     tokenizer = CharTokenizer.load(os.path.join(model_folder,"tokenizer.json"))
 
     # Generate sample
-    text = "Scholarly"
+    text = "Percy is stinky!"
     ascii = torch.tensor(tokenizer.encode(text), dtype=torch.long).to(device).unsqueeze(0)
     # Generate sample
-    output = model.full_sample(ascii, device, max_length=500, temperature=1)
+    output,phis = model.full_sample(ascii, device, max_length=500, temperature=1)
 
     # Plot strokes with denormalized values
     save_path = os.path.join(model_folder,"sample.svg")
     plot_tensor(output,denormalize_stats=PROCESSED_STROKES_STATS_PATH,ascii=text,save_path=save_path)
+    plot_attention(text,torch.concat(phis,dim=1).squeeze(),save_path = os.path.join(model_folder,"sample_attention.png"))
     
