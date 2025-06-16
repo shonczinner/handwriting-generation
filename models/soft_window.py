@@ -14,12 +14,12 @@ class SoftWindow(nn.Module):
         self.n_heads = n_heads
         self.linear = nn.Linear(input_dim, 3 * n_heads)
 
-    def forward(self, x, c, hidden=None, ascii_lengths=None):
+    def forward(self, x, c, kappa=None, ascii_lengths=None):
         """
         Args:
             x: [B, 1, H] - input at current time step
             c: [B, U, V] - character sequence (context)
-            hidden: [B, n_heads] - previous attention centers (optional), phi_termination
+            hidden: [B, n_heads] - previous attention centers (optional)
             ascii_lengths: [B] - actual lengths of character sequences (optional)
         Returns:
             w: [B, 1, V] - weighted sum of context (window)
@@ -32,10 +32,8 @@ class SoftWindow(nn.Module):
         assert B == Bc, "Batch size mismatch between input x and context c"
 
         # Initialize kappa if not provided
-        if hidden is None:
+        if kappa is None:
             kappa = torch.zeros(B, self.n_heads, device=x.device, dtype=x.dtype)
-        else:
-            kappa = hidden[0]
 
         # Compute attention parameters: alpha, beta, kappa
         linear_out = self.linear(x).squeeze(1)  # [B, 3 * n_heads]
@@ -70,7 +68,7 @@ class SoftWindow(nn.Module):
         # Compute window: [B, 1, U] @ [B, U, V] → [B, 1, V]
         w = torch.bmm(phi, c)
 
-        return w, (new_kappa,phi_termination)
+        return w, new_kappa,phi_termination
 
 
 

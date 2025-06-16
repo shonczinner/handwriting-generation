@@ -8,6 +8,9 @@ class SynthesisModel(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.vocab_size = config.vocab_size
+        self.num_layers = config.num_layers
+        self.hidden_dim = config.hidden_dim
+        self.n_heads = config.n_heads
         self.softwindow = SoftWindow(config.hidden_dim, config.n_heads)
 
         self.rnns = []
@@ -26,20 +29,29 @@ class SynthesisModel(nn.Module):
                 batch_first=True
             )
             self.rnns.append(rnn)
-
+        
         self.rnns = nn.ModuleList(self.rnns)
 
         self.head = BivariateBernoulliMixtureHead(config.hidden_dim*config.num_layers, config.n_components)
 
+    def get_initial_hidden_state(self, batch_size):
+        # Instead of None, create zero tensors with correct shape:
+        hidden_core = [torch.zeros(1, batch_size, self.hidden_dim) for _ in range(self.num_layers)]
+        kappa = torch.zeros(batch_size, self.n_heads)
+        w0 = torch.zeros(batch_size, 1, self.vocab_size)
+        return hidden_core, kappa, w0
+
+
     def network(self, x, c, hidden=None,ascii_lengths=None):
-        # hidden: (hidden1, kappa, hidden2) or None
+        # hidden: (hidden1, kappa, w0) or None
         # x: [B, T, H] - input 
         # c: [B, U] - character sequence (context)
         B, T,_ = x.shape
         if hidden is None:
-            hidden = [None] * len(self.rnns)
-            kappa = None
-            w0 = torch.zeros((B,1,self.vocab_size),dtype=x.dtype,device=x.device)
+            hidden, kappa, w0 = self.get_initial_hidden_state(x.size(0))
+            hidden = [h.to(x.device) for h in hidden]
+            kappa = kappa.to(x.device)
+            w0 = w0.to(x.device) 
         else:
             hidden, kappa, w0 = hidden
 
@@ -52,9 +64,8 @@ class SynthesisModel(nn.Module):
         w = []
         for t in range(T):
             out_t, h_t = self.rnns[0](torch.cat((x[:,t:t+1],w0),dim=2), hidden[0])
-            w0, kappa = self.softwindow(out_t,c_emb,kappa,ascii_lengths)         
-            hidden0 = h_t
-            hidden[0]=hidden0
+            w0, kappa,phi_termination = self.softwindow(out_t,c_emb,kappa,ascii_lengths)         
+            hidden[0]=h_t
             out.append(out_t)
             w.append(w0)
 
@@ -62,7 +73,7 @@ class SynthesisModel(nn.Module):
         w = torch.cat(w, dim=1)
 
         inputs = [out]
-        new_hidden.append(hidden0)
+        new_hidden.append(hidden[0])
 
         for i, rnn in enumerate(self.rnns[1:], start=1):
             out, h = rnn(torch.cat((x,out,w),dim=2), hidden[i])   
@@ -71,28 +82,28 @@ class SynthesisModel(nn.Module):
 
 
         new_hidden = (new_hidden, kappa, w0)
-        return torch.concat(inputs,dim=-1), new_hidden
+        return torch.concat(inputs,dim=-1), new_hidden,phi_termination
 
     def forward(self, x, c, hidden=None):
-        out, hidden = self.network(x, c, hidden)
+        out, hidden,phi_termination = self.network(x, c, hidden)
         means, stdevs, log_weights, correlations, last_logit = self.head(out)
-        return means, stdevs, log_weights, correlations, last_logit, hidden
+        return means, stdevs, log_weights, correlations, last_logit, hidden,phi_termination
 
     def loss(self, x, c, y, lengths = None, ascii_lengths=None,hidden=None):
-        out, hidden = self.network(x, c, hidden, ascii_lengths)
+        out, hidden,_ = self.network(x, c, hidden, ascii_lengths)
         loss = self.head.loss(out, y, lengths)
         return loss, hidden
 
     @torch.no_grad()
     def get_primed_hidden(self, prime_x, c, hidden=None):
-        _, hidden = self.network(prime_x, c, hidden)
+        _, hidden,_ = self.network(prime_x, c, hidden)
         return hidden
     
     @torch.no_grad()
     def sample(self, x, c, hidden=None, temperature = 1):
-        out, hidden = self.network(x, c, hidden)
+        out, hidden,phi_termination = self.network(x, c, hidden)
         sample = self.head.sample(out ,temperature=temperature)
-        return sample, hidden
+        return sample, hidden,phi_termination
 
     @torch.no_grad()
     def full_sample(self, ascii, device,  hidden = None, temperature = 1.0,max_length=1000):
@@ -105,13 +116,12 @@ class SynthesisModel(nn.Module):
         phis = []
         generated = start
         for _ in range(max_length):
-            sample, hidden = self.sample(generated[:, -1:],ascii, hidden, temperature=temperature)
+            sample, hidden,phi_termination = self.sample(generated[:, -1:],ascii, hidden, temperature=temperature)
             generated = torch.cat((generated, sample.unsqueeze(0).unsqueeze(0)), dim=1)
             # termination condition
-            phi = hidden[1][1]
-            if phi[:,:,U]==phi.max():
+            if phi_termination[:,:,U]==phi_termination.max():
                 break
-            phis.append(phi)
+            phis.append(phi_termination)
 
         return generated,phis
 
@@ -146,13 +156,14 @@ if __name__ == "__main__":
     y = torch.randn(batch_size, seq_len, 3)  # target
 
     # --- Forward pass ---
-    means, stdevs, log_weights, correlations, last_logit, hidden = model(x, c)
+    means, stdevs, log_weights, correlations, last_logit, hidden,phi_termination = model(x, c)
     print("Forward pass:")
     print("Means shape:", means.shape)
     print("Stdevs shape:", stdevs.shape)
     print("Log Weights shape:", log_weights.shape)
     print("Correlations shape:", correlations.shape)
     print("Last Logit shape:", last_logit.shape)
+    print("phi shape", phi_termination.shape)
 
     # --- Loss computation ---
     loss, hidden = model.loss(x, c, y, torch.tensor([seq_len]*batch_size))
@@ -162,7 +173,7 @@ if __name__ == "__main__":
     # --- Sampling ---
     sample_input = torch.randn(1, 1, config.input_dim)
     c_sample = torch.randint(0, config.vocab_size, (1, cond_len))
-    sample, _ = model.sample(sample_input, c_sample)
+    sample, _,_ = model.sample(sample_input, c_sample)
     print("\nSampling:")
     print("Sample shape:", sample.shape)
 
@@ -172,13 +183,13 @@ if __name__ == "__main__":
         batch_size, seq_len, input_dim = x.shape
 
         # --- Full-sequence forward pass ---
-        full_out, full_hidden = model.network(x, c)
+        full_out, full_hidden,phi_termination = model.network(x, c)
 
         # --- Step-by-step forward pass ---
         stepwise_outputs = []
         hidden = None
         for t in range(seq_len):
-            out_t, hidden = model.network(x[:, t:t+1], c, hidden)
+            out_t, hidden, phi_termination = model.network(x[:, t:t+1], c, hidden)
             stepwise_outputs.append(out_t)
 
         stepwise_out = torch.cat(stepwise_outputs, dim=1)

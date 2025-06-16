@@ -30,7 +30,7 @@ if __name__ == "__main__":
 
     tokenizer = CharTokenizer.load(os.path.join(model_folder,"tokenizer.json"))
 
-    prime_text = "Hello"
+    prime_text = "The dog sat on"
 
     root = tk.Tk()
     app = HandwritingRecorder(root)
@@ -38,17 +38,22 @@ if __name__ == "__main__":
 
     df = app.get_stroke_df()
 
-    prime_tensor = df_to_tensor(df,PROCESSED_STROKES_STATS_PATH).to(device)
+    #prime_tensor = df_to_tensor(df,PROCESSED_STROKES_STATS_PATH).to(device)
+    prime_tensor = df_to_tensor(df).to(device)
     print(prime_tensor.shape)
 
-    text = "World"
+    text = "the mat"
     prime_ascii = torch.tensor(tokenizer.encode(prime_text), dtype=torch.long).to(device).unsqueeze(0)
     ascii = torch.tensor(tokenizer.encode(text), dtype=torch.long).to(device).unsqueeze(0)
 
-    ascii = torch.concat((prime_ascii,ascii),dim=-1)
-    prime_hidden = model.get_primed_hidden(prime_tensor,ascii)
+    cat_ascii = torch.concat((prime_ascii,ascii),dim=-1)
+    prime_hidden = model.get_primed_hidden(prime_tensor,cat_ascii)
+    hidden = list(model.get_initial_hidden_state(1))
+    hidden[0]=prime_hidden[0]
+    hidden[1] = hidden[1].to(device)
+    hidden[2] = hidden[2].to(device)
 
-    output,phis = model.full_sample(ascii, device, hidden = prime_hidden, max_length=1000, temperature=0.7)
+    output,phis = model.full_sample(ascii, device, hidden = hidden, max_length=1000, temperature=0.7)
 
     # Plot strokes with denormalized values
     save_path = os.path.join(model_folder,"primed_sample.svg")
