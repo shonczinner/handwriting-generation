@@ -52,7 +52,7 @@ dummy_w0 = torch.zeros((1, 1, vocab_size))
 
 dummy_hidden_parts = dummy_hidden_core + [dummy_kappa, dummy_w0]
 
-dummy_temperature = torch.tensor(1.0)
+dummy_temperature = torch.tensor([1.0])
 
 class ExportableSampleModel(nn.Module):
     def __init__(self, model):
@@ -66,7 +66,7 @@ class ExportableSampleModel(nn.Module):
         w0 = hidden_parts[num_layers + 1]
         hidden = (hidden_core, kappa, w0)
 
-        sample, hidden_out, phi_termination = self.model.sample(x, c, hidden, temperature)
+        sample, hidden_out, phi_termination = self.model.sample(x, c, hidden, temperature[0])
         hidden_core_out, kappa_out, w0_out = hidden_out
         return sample, *hidden_core_out, kappa_out, w0_out, phi_termination
 
@@ -151,7 +151,7 @@ if __name__ == "__main__":
     sample_inputs = {
         "input": dummy_input_np,
         "ascii": dummy_ascii_np,
-        "temperature": np.array(1.0, dtype=np.float32)
+        "temperature": np.array([1.0], dtype=np.float32)
     }
     # Feed initial hidden states obtained from initial_state_model.onnx
     for i in range(num_layers):
@@ -179,7 +179,7 @@ if __name__ == "__main__":
     sample_inputs_2 = {
         "input": to_numpy(sample_out[None,None,:]),  # could use different input for actual next stroke
         "ascii": dummy_ascii_np,
-        "temperature": np.array(1.0, dtype=np.float32)
+        "temperature": np.array([1.0], dtype=np.float32)
     }
     for i in range(num_layers):
         sample_inputs_2[f"hidden_core_{i}.1"] = new_hidden_core_np[i]
